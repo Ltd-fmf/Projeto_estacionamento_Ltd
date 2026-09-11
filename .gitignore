@@ -1,0 +1,9 @@
+node_modules/
+.env
+
+# Dado pessoal: o banco original (dados.db) traz nome, placa, setor e ramal de
+# 368 pessoas identificáveis. Nunca versionar — no repo de origem ele foi
+# commitado e continua exposto no histórico.
+*.db
+db/migrations/seed_veiculos.sql
+imagens/
