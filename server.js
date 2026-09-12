@@ -19,7 +19,12 @@
 // o app conhece o próprio BASE_PATH.
 
 require("dotenv/config");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const express = require("express");
+const multer = require("multer");
+const sharp = require("sharp");
 const { pool } = require("./db/pool");
 const {
   BASE_PATH,
@@ -33,7 +38,7 @@ const {
   registrarFalha,
   limparFalhas,
 } = require("./lib/auth");
-const { paginaLista, paginaEdicao, paginaLogin } = require("./lib/paginas");
+const { paginaLista, paginaEdicao, paginaDetalhe, paginaLogin } = require("./lib/paginas");
 
 const app = express();
 // Atrás do nginx: sem isto, req.ip seria sempre 127.0.0.1 e o freio de
@@ -42,6 +47,42 @@ app.set("trust proxy", true);
 app.use(express.urlencoded({ extended: false }));
 
 const PORT = Number(process.env.PORT || 3007);
+
+// As fotos ficam em disco, em `imagens/` — pasta já ignorada pelo .gitignore.
+// Fora do versionamento de propósito: foto de carro de funcionário é dado
+// pessoal, e assim o diretório sobrevive ao `git pull` do deploy.
+const DIR_FOTOS = path.join(__dirname, "imagens");
+fs.mkdirSync(DIR_FOTOS, { recursive: true });
+
+const TIPOS_ACEITOS = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+// Em memória, não em disco: o arquivo passa antes pelo sharp, e o que é gravado
+// é só a versão já reduzida. O limite é de entrada — foto de celular hoje passa
+// fácil de 5 MB, e o que sai daqui fica na casa das centenas de KB.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => cb(null, TIPOS_ACEITOS.has(file.mimetype)),
+});
+
+// Redução sem perda visível: 1600px no maior lado (mais do que isso não muda
+// nada numa tela de consulta) e WebP em qualidade 82, que é onde o olho ainda
+// não distingue do original. `rotate()` sem argumento aplica a orientação do
+// EXIF — sem ele, foto tirada de pé no celular aparece deitada.
+async function comprimir(buffer, destino) {
+  await sharp(buffer)
+    .rotate()
+    .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+    .webp({ quality: 82 })
+    .toFile(destino);
+}
+
+// Trocar ou apagar a foto deixa o arquivo anterior órfão em disco.
+function removerArquivo(nome) {
+  if (!nome) return;
+  // basename: impede que um valor estranho no banco vire travessia de diretório.
+  fs.rm(path.join(DIR_FOTOS, path.basename(nome)), { force: true }, () => {});
+}
 
 // Placa dos dois padrões: antigo (AAA0000) e Mercosul (AAA0A00).
 const RE_PLACA = /^[A-Z]{3}[0-9][0-9A-Z][0-9]{2}$/;
@@ -165,6 +206,66 @@ router.get("/", requireAuth, async (req, res) => {
   );
 });
 
+// A foto sai por rota própria, e não por express.static: é dado pessoal e só
+// pode ser entregue a quem tem sessão. Servir a pasta abriria as imagens a
+// qualquer um que descobrisse o nome do arquivo.
+router.get("/veiculos/:id/foto", requireAuth, async (req, res) => {
+  const r = await pool.query(`SELECT foto FROM veiculo WHERE id = $1`, [req.params.id]);
+  const nome = r.rows[0] && r.rows[0].foto;
+  if (!nome) return res.status(404).send("Sem foto.");
+  res.sendFile(path.join(DIR_FOTOS, path.basename(nome)));
+});
+
+router.post("/veiculos/:id/foto", requireAuth, requireAdmin, upload.single("foto"), async (req, res) => {
+  const destino = `${BASE_PATH}/veiculos/${req.params.id}`;
+  if (!req.file) {
+    const aviso = "Envie uma imagem JPG, PNG ou WEBP de até 5 MB.";
+    return res.redirect(`${destino}?msg=${encodeURIComponent(aviso)}`);
+  }
+
+  const atual = await pool.query(`SELECT foto FROM veiculo WHERE id = $1`, [req.params.id]);
+  if (!atual.rows[0]) return res.status(404).send("Veículo não encontrado.");
+
+  // Nome sorteado em vez do nome que veio do navegador: aquele não é confiável
+  // (traz caminho, acento, colisão entre dois "foto.jpg") e um nome previsível
+  // deixaria a foto adivinhável por quem soubesse o id. Sempre .webp porque é
+  // o formato em que o sharp regrava.
+  const nomeArquivo = `${req.params.id}-${crypto.randomBytes(8).toString("hex")}.webp`;
+  try {
+    await comprimir(req.file.buffer, path.join(DIR_FOTOS, nomeArquivo));
+  } catch (e) {
+    console.error("[estacionamento] falha ao processar imagem:", e);
+    const aviso = "Não foi possível ler essa imagem. Tente outro arquivo.";
+    return res.redirect(`${destino}?msg=${encodeURIComponent(aviso)}`);
+  }
+
+  await pool.query(
+    `UPDATE veiculo SET foto=$1, atualizado_em=now(), atualizado_por=$2 WHERE id=$3`,
+    [nomeArquivo, req.sessao.id, req.params.id]
+  );
+  removerArquivo(atual.rows[0].foto);
+  res.redirect(`${destino}?msg=${encodeURIComponent("Foto atualizada.")}`);
+});
+
+router.post("/veiculos/:id/foto/excluir", requireAuth, requireAdmin, async (req, res) => {
+  const atual = await pool.query(`SELECT foto FROM veiculo WHERE id = $1`, [req.params.id]);
+  if (!atual.rows[0]) return res.status(404).send("Veículo não encontrado.");
+  await pool.query(
+    `UPDATE veiculo SET foto=NULL, atualizado_em=now(), atualizado_por=$1 WHERE id=$2`,
+    [req.sessao.id, req.params.id]
+  );
+  removerArquivo(atual.rows[0].foto);
+  res.redirect(`${BASE_PATH}/veiculos/${req.params.id}?msg=${encodeURIComponent("Foto removida.")}`);
+});
+
+// Detalhe só leitura: sem requireAdmin de propósito — quem tem papel `consulta`
+// precisa ver os dados (é o caso de uso da portaria), só não pode alterar.
+router.get("/veiculos/:id/ver", requireAuth, async (req, res) => {
+  const r = await pool.query(`SELECT * FROM veiculo WHERE id = $1`, [req.params.id]);
+  if (!r.rows[0]) return res.status(404).send("Veículo não encontrado.");
+  res.type("html").send(paginaDetalhe({ registro: r.rows[0], sessao: req.sessao }));
+});
+
 router.get("/veiculos/:id", requireAuth, requireAdmin, async (req, res) => {
   const r = await pool.query(`SELECT * FROM veiculo WHERE id = $1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).send("Veículo não encontrado.");
@@ -197,8 +298,10 @@ router.post("/veiculos/:id", requireAuth, requireAdmin, async (req, res) => {
 });
 
 router.post("/veiculos/:id/excluir", requireAuth, requireAdmin, async (req, res) => {
-  const r = await pool.query(`DELETE FROM veiculo WHERE id=$1 RETURNING placa`, [req.params.id]);
+  const r = await pool.query(`DELETE FROM veiculo WHERE id=$1 RETURNING placa, foto`, [req.params.id]);
   if (!r.rowCount) return res.status(404).send("Veículo não encontrado.");
+  // Sem isto a foto de um veículo excluído ficaria em disco para sempre.
+  removerArquivo(r.rows[0].foto);
   res.redirect(`${BASE_PATH}/?msg=${encodeURIComponent(`Veículo ${r.rows[0].placa || "sem placa"} excluído.`)}`);
 });
 
@@ -214,6 +317,15 @@ app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // Tratador global — sem isso, uma falha do Postgres viraria página branca.
 app.use((err, _req, res, _next) => {
+  // Arquivo grande demais é erro de quem usa, não falha do servidor: merece
+  // recado claro em vez da página genérica de erro interno.
+  if (err instanceof multer.MulterError) {
+    const aviso =
+      err.code === "LIMIT_FILE_SIZE"
+        ? "A imagem passa de 15 MB. Reduza o tamanho e tente de novo."
+        : "Não foi possível enviar a imagem.";
+    return res.redirect(`${BASE_PATH}/?msg=${encodeURIComponent(aviso)}`);
+  }
   console.error("[estacionamento] erro não tratado:", err);
   if (!res.headersSent) res.status(500).send("Erro interno. Tente de novo em instantes.");
 });
