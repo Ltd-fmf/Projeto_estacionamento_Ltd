@@ -37,16 +37,20 @@ const {
   registrarFalha,
   limparFalhas,
 } = require("./lib/auth");
-const { upload, comprimir, removerArquivo, DIR_FOTOS } = require("./lib/fotos");
+const { uploadUm, comprimir, removerArquivo, DIR_FOTOS } = require("./lib/fotos");
 const { paginaLista, paginaEdicao, paginaDetalhe } = require("./lib/paginas");
 const { paginaLogin } = require("./lib/paginas-social");
 const { router: social } = require("./lib/social");
 const { router: carros } = require("./lib/carros");
+const { cabecalhos, csrf, flash, limitar, auditar } = require("./lib/seguranca");
 
 const app = express();
 // Atrás do nginx: sem isto, req.ip seria sempre 127.0.0.1 e o freio de
 // tentativas de login misturaria todo mundo num só balde.
-app.set("trust proxy", true);
+// Só o nginx local (loopback) é confiável. Com `true`, o X-Forwarded-For inteiro
+// valia e o cliente forjava o IP, escapando dos freios de login e cadastro.
+app.set("trust proxy", "loopback");
+app.disable("x-powered-by");
 app.use(express.urlencoded({ extended: false }));
 
 const PORT = Number(process.env.PORT || 3007);
@@ -97,7 +101,10 @@ function destinoSeguro(proximo) {
 const router = express.Router();
 
 // CSS e fontes (nada pessoal aqui; fotos continuam atrás de login).
+router.use(cabecalhos);
 router.use("/publico", express.static(path.join(__dirname, "public"), { maxAge: "7d" }));
+router.use(flash);
+router.use(csrf);
 router.use(social);
 router.use(carros);
 
@@ -110,9 +117,12 @@ router.get("/login", async (req, res, next) => {
   }
 });
 
-router.post("/login", async (req, res, next) => {
+// Teto por IP em qualquer login, além do freio por IP+login de lib/auth.js.
+const limiteLogin = limitar({ janelaMs: 15 * 60_000, max: 40, nome: "login-ip" });
+
+router.post("/login", limiteLogin, async (req, res, next) => {
   try {
-    const login = String(req.body.login || "").trim();
+    const login = String(req.body.login || "").trim().slice(0, 60);
     const proximo = String(req.body.proximo || "");
 
     const minutos = bloqueado(req, login);
@@ -126,9 +136,12 @@ router.post("/login", async (req, res, next) => {
       );
     }
 
-    const sessao = await autenticar(login, String(req.body.senha || ""));
+    // Senha enorme custaria um PBKDF2 inteiro por tentativa: corta cedo.
+    const senha = String(req.body.senha || "");
+    const sessao = senha.length > 128 ? null : await autenticar(login, senha);
     if (!sessao) {
       registrarFalha(req, login);
+      auditar("login_falhou", req, { login });
       // Mensagem única: não diz se foi o usuário ou a senha que errou.
       return res.type("html").send(paginaLogin({ erro: "Usuário ou senha inválidos.", proximo, login }));
     }
@@ -145,15 +158,27 @@ router.post("/login", async (req, res, next) => {
 
     limparFalhas(req, login);
     emitirSessao(res, sessao);
+    auditar("login_ok", req, { usuario: sessao.id });
     res.redirect(destinoSeguro(proximo));
   } catch (e) {
     next(e);
   }
 });
 
-router.post("/sair", (_req, res) => {
-  encerrarSessao(res);
-  res.redirect(`${BASE_PATH}/login`);
+// Sair invalida o token no servidor (sessao_versao+1), e não só apaga o cookie:
+// um token copiado antes deixa de valer.
+router.post("/sair", async (req, res, next) => {
+  try {
+    const sessao = await sessaoDe(req);
+    if (sessao) {
+      await pool.query(`UPDATE usuario SET sessao_versao = sessao_versao + 1 WHERE id = $1`, [sessao.id]);
+      auditar("logout", req, { usuario: sessao.id });
+    }
+    encerrarSessao(res);
+    res.redirect(`${BASE_PATH}/login`);
+  } catch (e) {
+    next(e);
+  }
 });
 
 router.get("/", requireAuth, async (req, res) => {
@@ -198,7 +223,7 @@ router.get("/veiculos/:id/foto", requireAuth, async (req, res) => {
   res.sendFile(path.join(DIR_FOTOS, path.basename(nome)));
 });
 
-router.post("/veiculos/:id/foto", requireAuth, requireAdmin, upload.single("foto"), async (req, res) => {
+router.post("/veiculos/:id/foto", requireAuth, requireAdmin, ...uploadUm("foto"), async (req, res) => {
   const destino = `${BASE_PATH}/veiculos/${req.params.id}`;
   if (!req.file) {
     const aviso = "Envie uma imagem JPG, PNG ou WEBP de até 5 MB.";
@@ -307,6 +332,12 @@ app.use((err, _req, res, _next) => {
         ? "A imagem passa de 15 MB. Reduza o tamanho e tente de novo."
         : "Não foi possível enviar a imagem.";
     return res.redirect(`${BASE_PATH}/?msg=${encodeURIComponent(aviso)}`);
+  }
+  // Arquivo de foto que o banco cita mas o disco não tem: é "não encontrado",
+  // não falha do servidor (e não deve poluir o log com stack).
+  if (err && (err.code === "ENOENT" || err.status === 404)) {
+    if (!res.headersSent) res.status(404).send("Não encontrado.");
+    return;
   }
   console.error("[estacionamento] erro não tratado:", err);
   if (!res.headersSent) res.status(500).send("Erro interno. Tente de novo em instantes.");

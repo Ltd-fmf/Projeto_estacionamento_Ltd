@@ -142,3 +142,6 @@ main{max-width:1080px;margin:0 auto;padding:28px 16px 64px}
 .selo{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.74rem;font-weight:700;background:color-mix(in srgb,var(--faixa) 30%,var(--cartao));border:1px solid var(--faixa)}
 .selo.recusado{background:color-mix(in srgb,var(--erro) 14%,var(--cartao));border-color:var(--erro);color:var(--erro)}
 .item form.acoes{flex-wrap:wrap;justify-content:flex-end}
+
+/* Campo-isca anti-robô: fora da tela, não display:none (robôs ignoram esse). */
+.isca{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
