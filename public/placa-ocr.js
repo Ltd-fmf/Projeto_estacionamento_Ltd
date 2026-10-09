@@ -280,6 +280,7 @@
           if (rank && rank.length) {
             lida.value = rank[0].placa;
             campo.value = rank[0].placa;
+            campo.dispatchEvent(new Event("input", { bubbles: true }));
             estado.className = "achou";
             estado.textContent = "Lida da foto: " + rank[0].placa + " — confira e corrija se precisar";
           } else {

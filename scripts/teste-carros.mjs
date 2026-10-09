@@ -212,6 +212,39 @@ try {
   const sobrou = (await pool.query("SELECT 1 FROM veiculo WHERE id=$1", [antiga])).rowCount;
   ok(sobrou === 0, "ficha antiga absorvida e apagada");
 
+  // ---- reivindicar ficha antiga
+  const placaR = nova(), placaOutra = nova();
+  const fichaR = (await pool.query("INSERT INTO veiculo (placa, nome, setor, modelo, cor, status) VALUES ($1,'Fulano Reivindicado Souza','Compras','Palio','Azul','aprovado') RETURNING id", [placaR])).rows[0].id;
+  const fichaO = (await pool.query("INSERT INTO veiculo (placa, nome, status) VALUES ($1,'Outro Nome','aprovado') RETURNING id", [placaOutra])).rows[0].id;
+  r = await navegador().get("/carros/ficha?placa=" + placaR);
+  ok(r.status !== 200, "consulta de ficha exige login (veio " + r.status + ")");
+  r = await a.get("/carros/ficha?placa=" + placaR);
+  const dj = JSON.parse(r.texto);
+  ok(dj.fichas.length === 1 && dj.fichas[0].id == fichaR && dj.fichas[0].nome === "Fulano S." && dj.fichas[0].modelo === "Palio", "consulta devolve a ficha com nome abreviado");
+  r = await a.get("/carros/ficha?placa=" + placa);
+  ok(JSON.parse(r.texto).fichas.length === 0, "consulta não devolve carro que tem dono");
+  r = await a.get("/carros/ficha?placa=XX");
+  ok(JSON.parse(r.texto).fichas.length === 0, "placa inválida -> vazio");
+
+  t = await a.token("/carros/novo");
+  await a.post("/carros", { placa: placaR, modelo: "Palio", reivindica: String(fichaO), foto_placa: await jpg("white") }, { csrf: t, multipart: true });
+  let rr = (await pool.query("SELECT id, ficha_reivindicada FROM veiculo WHERE placa=$1 AND usuario_id=$2", [placaR, idA])).rows[0];
+  ok(rr && rr.ficha_reivindicada === null, "reivindica de ficha com outra placa é ignorado");
+  await pool.query("DELETE FROM veiculo WHERE id=$1", [rr.id]);
+
+  t = await a.token("/carros/novo");
+  await a.post("/carros", { placa: placaR, modelo: "Palio", reivindica: String(fichaR), foto_placa: await jpg("white") }, { csrf: t, multipart: true });
+  rr = (await pool.query("SELECT id, ficha_reivindicada FROM veiculo WHERE placa=$1 AND usuario_id=$2", [placaR, idA])).rows[0];
+  ok(rr && rr.ficha_reivindicada == fichaR, "reivindica válida grava a ficha");
+  r = await adm.get("/admin/pendencias");
+  ok(r.texto.includes("Reivindica a ficha antiga de") && r.texto.includes("Fulano Reivindicado Souza") && new RegExp(`name="absorver" value="${fichaR}" checked`).test(r.texto), "fila mostra a reivindicação e já marca absorver");
+  t = await adm.token("/admin/pendencias");
+  await adm.post(`/admin/carro/${rr.id}/aprovar`, { absorver: String(fichaR) }, { csrf: t });
+  ok((await pool.query("SELECT 1 FROM veiculo WHERE id=$1", [fichaR])).rowCount === 0, "aprovar absorve a ficha reivindicada");
+  const lg = (await pool.query("SELECT motivo FROM aprovacao_log WHERE alvo_id=$1 AND tipo='veiculo' ORDER BY id DESC LIMIT 1", [fichaR])).rows[0];
+  ok(lg && lg.motivo.includes("Fulano Reivindicado Souza") && lg.motivo.includes("Compras") && lg.motivo.includes("Palio"), "log guarda o resumo da ficha apagada");
+  ok((await pool.query("SELECT 1 FROM veiculo WHERE id=$1", [fichaO])).rowCount === 1, "outra ficha continua intacta");
+
   t = await a.token("/carros/novo");
   const lixo = new Blob(["isto nao e imagem"], { type: "image/jpeg" });
   r = await a.post("/carros", { placa: nova(), modelo: "X", foto_placa: lixo }, { csrf: t, multipart: true });

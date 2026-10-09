@@ -245,3 +245,11 @@ body.camera-aberta{overflow:hidden}
 .acoes-tabela{text-align:right!important}
 .paginacao{display:flex;gap:14px;align-items:center;justify-content:center;margin-top:18px}
 [hidden]{display:none!important}
+
+/* ---- Reivindicar ficha antiga ---- */
+.ficha-aviso{border:2px solid var(--faixa);background:color-mix(in srgb,var(--faixa) 14%,var(--cartao));border-radius:var(--raio);padding:14px 16px;display:grid;gap:10px}
+.ficha-aviso p{margin:0}
+.ficha-titulo{font-weight:700}
+.ficha-linha{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.ficha-reivind{margin:6px 0 0;font-size:.9rem}
+.selo.aprovado{background:color-mix(in srgb,var(--ok) 18%,var(--cartao));border-color:var(--ok);color:var(--ok)}

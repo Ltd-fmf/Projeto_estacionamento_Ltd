@@ -8,7 +8,7 @@ import sharp from "sharp";
 const require = createRequire(import.meta.url);
 const { pool } = require("../db/pool");
 const { hashSenha } = require("../lib/auth");
-const { casar } = require("../lib/busca");
+const { casar, nomeConfere, nomeAbreviado } = require("../lib/busca");
 const { DIR_FOTOS } = require("../lib/fotos");
 
 const HOST = process.env.TESTE_HOST || "http://127.0.0.1:3007";
@@ -91,6 +91,11 @@ function navegador(ipReal) {
   const t4 = casar(["TRZ5E2Z", "TRZ5E22"], banco);
   ok(t4.exatas[0] === "TRZ5E22", "casar: uma das leituras exata basta");
   ok(casar(["TR"], banco).sugestoes.length === 0, "casar: leitura curta demais é ignorada");
+  ok(nomeConfere("João Silva Souza", "Joao S."), "nomeConfere: acento e sobrenome abreviado");
+  ok(nomeConfere("Maria da Silva", "maria silva"), "nomeConfere: ligações e caixa");
+  ok(!nomeConfere("João Silva", "Pedro Silva"), "nomeConfere: primeiro nome diferente");
+  ok(!nomeConfere("João Silva", "João Pereira"), "nomeConfere: só o primeiro nome não basta");
+  ok(nomeAbreviado("João Silva Souza") === "João S." && nomeAbreviado("Ana") === "Ana", "nomeAbreviado");
 }
 
 const sufixo = Date.now().toString(36);
