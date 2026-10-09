@@ -19,8 +19,6 @@
 // o app conhece o próprio BASE_PATH.
 
 require("dotenv/config");
-const crypto = require("node:crypto");
-const fs = require("node:fs");
 const path = require("node:path");
 const express = require("express");
 const multer = require("multer");
@@ -37,11 +35,10 @@ const {
   registrarFalha,
   limparFalhas,
 } = require("./lib/auth");
-const { uploadUm, comprimir, removerArquivo, DIR_FOTOS } = require("./lib/fotos");
-const { paginaLista, paginaEdicao, paginaDetalhe } = require("./lib/paginas");
 const { paginaLogin } = require("./lib/paginas-social");
 const { router: social } = require("./lib/social");
 const { router: carros } = require("./lib/carros");
+const { router: busca } = require("./lib/busca-rotas");
 const { cabecalhos, csrf, flash, limitar, auditar } = require("./lib/seguranca");
 
 const app = express();
@@ -55,42 +52,6 @@ app.use(express.urlencoded({ extended: false }));
 
 const PORT = Number(process.env.PORT || 3007);
 
-// Placa dos dois padrões: antigo (AAA0000) e Mercosul (AAA0A00).
-const RE_PLACA = /^[A-Z]{3}[0-9][0-9A-Z][0-9]{2}$/;
-
-function normalizarPlaca(v) {
-  return String(v || "").trim().toUpperCase().replace(/[\s-]/g, "");
-}
-
-// Aviso, nunca bloqueio: o dado importado tem 16 registros sem placa e 3 fora
-// de qualquer padrão (QZAJ51, PHZIE26, PHP). Barrar formato impediria de abrir
-// e consertar justamente esses.
-function avisoPlaca(placa) {
-  if (!placa) return "Veículo salvo sem placa — preencha quando souber.";
-  if (!RE_PLACA.test(placa)) return `Placa "${placa}" fora do padrão brasileiro — salva como está.`;
-  return null;
-}
-
-function campos(body) {
-  return {
-    placa: normalizarPlaca(body.placa),
-    nome: (body.nome || "").trim() || null,
-    setor: (body.setor || "").trim() || null,
-    ramal: (body.ramal || "").trim() || null,
-    modelo: (body.modelo || "").trim() || null,
-    cor: (body.cor || "").trim() || null,
-  };
-}
-
-// Placas repetidas: marcadas na listagem para limpeza (o dado legado tem 31
-// placas em 78 linhas). Sem UNIQUE no banco justamente para não perder dado.
-async function placasDuplicadas() {
-  const r = await pool.query(
-    `SELECT placa FROM veiculo WHERE placa <> '' GROUP BY placa HAVING count(*) > 1`
-  );
-  return new Set(r.rows.map((x) => x.placa));
-}
-
 // Só aceita voltar para dentro do próprio app — `proximo` vem da query string,
 // e sem esta trava viraria um open redirect para qualquer site.
 function destinoSeguro(proximo) {
@@ -102,11 +63,22 @@ const router = express.Router();
 
 // CSS e fontes (nada pessoal aqui; fotos continuam atrás de login).
 router.use(cabecalhos);
-router.use("/publico", express.static(path.join(__dirname, "public"), { maxAge: "7d" }));
+// CSS/JS do site revalidam sempre (ETag; o ?v= das páginas já troca a URL);
+// fontes e o motor do OCR quase nunca mudam e são pesados: cache longo.
+router.use(
+  "/publico",
+  express.static(path.join(__dirname, "public"), {
+    setHeaders(res, arquivo) {
+      const longo = /[\\/](fontes|ocr)[\\/]/.test(arquivo);
+      res.setHeader("Cache-Control", longo ? "public, max-age=604800, immutable" : "no-cache");
+    },
+  })
+);
 router.use(flash);
 router.use(csrf);
 router.use(social);
 router.use(carros);
+router.use(busca);
 
 router.get("/login", async (req, res, next) => {
   try {
@@ -179,137 +151,6 @@ router.post("/sair", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
-});
-
-router.get("/", requireAuth, async (req, res) => {
-  const q = String(req.query.q || "").trim();
-  const params = [];
-  let filtro = "";
-  if (q) {
-    params.push(`%${q.toLowerCase()}%`);
-    filtro = `WHERE lower(placa) LIKE $1 OR lower(coalesce(nome,'')) LIKE $1
-                 OR lower(coalesce(setor,'')) LIKE $1 OR lower(coalesce(ramal,'')) LIKE $1`;
-  }
-  const [lista, contagem, dup] = await Promise.all([
-    pool.query(
-      `SELECT id, placa, nome, setor, ramal, modelo, cor
-         FROM veiculo ${filtro}
-        ORDER BY nome NULLS LAST, placa LIMIT 500`,
-      params
-    ),
-    pool.query(`SELECT count(*)::int AS n FROM veiculo`),
-    placasDuplicadas(),
-  ]);
-
-  res.type("html").send(
-    paginaLista({
-      registros: lista.rows,
-      q,
-      sessao: req.sessao,
-      total: contagem.rows[0].n,
-      duplicadas: dup,
-      msg: req.query.msg || "",
-    })
-  );
-});
-
-// A foto sai por rota própria, e não por express.static: é dado pessoal e só
-// pode ser entregue a quem tem sessão. Servir a pasta abriria as imagens a
-// qualquer um que descobrisse o nome do arquivo.
-router.get("/veiculos/:id/foto", requireAuth, async (req, res) => {
-  const r = await pool.query(`SELECT foto FROM veiculo WHERE id = $1`, [req.params.id]);
-  const nome = r.rows[0] && r.rows[0].foto;
-  if (!nome) return res.status(404).send("Sem foto.");
-  res.sendFile(path.join(DIR_FOTOS, path.basename(nome)));
-});
-
-router.post("/veiculos/:id/foto", requireAuth, requireAdmin, ...uploadUm("foto"), async (req, res) => {
-  const destino = `${BASE_PATH}/veiculos/${req.params.id}`;
-  if (!req.file) {
-    const aviso = "Envie uma imagem JPG, PNG ou WEBP de até 5 MB.";
-    return res.redirect(`${destino}?msg=${encodeURIComponent(aviso)}`);
-  }
-
-  const atual = await pool.query(`SELECT foto FROM veiculo WHERE id = $1`, [req.params.id]);
-  if (!atual.rows[0]) return res.status(404).send("Veículo não encontrado.");
-
-  // Nome sorteado em vez do nome que veio do navegador: aquele não é confiável
-  // (traz caminho, acento, colisão entre dois "foto.jpg") e um nome previsível
-  // deixaria a foto adivinhável por quem soubesse o id. Sempre .webp porque é
-  // o formato em que o sharp regrava.
-  const nomeArquivo = `${req.params.id}-${crypto.randomBytes(8).toString("hex")}.webp`;
-  try {
-    await comprimir(req.file.buffer, path.join(DIR_FOTOS, nomeArquivo));
-  } catch (e) {
-    console.error("[estacionamento] falha ao processar imagem:", e);
-    const aviso = "Não foi possível ler essa imagem. Tente outro arquivo.";
-    return res.redirect(`${destino}?msg=${encodeURIComponent(aviso)}`);
-  }
-
-  await pool.query(
-    `UPDATE veiculo SET foto=$1, atualizado_em=now(), atualizado_por=$2 WHERE id=$3`,
-    [nomeArquivo, req.sessao.id, req.params.id]
-  );
-  removerArquivo(atual.rows[0].foto);
-  res.redirect(`${destino}?msg=${encodeURIComponent("Foto atualizada.")}`);
-});
-
-router.post("/veiculos/:id/foto/excluir", requireAuth, requireAdmin, async (req, res) => {
-  const atual = await pool.query(`SELECT foto FROM veiculo WHERE id = $1`, [req.params.id]);
-  if (!atual.rows[0]) return res.status(404).send("Veículo não encontrado.");
-  await pool.query(
-    `UPDATE veiculo SET foto=NULL, atualizado_em=now(), atualizado_por=$1 WHERE id=$2`,
-    [req.sessao.id, req.params.id]
-  );
-  removerArquivo(atual.rows[0].foto);
-  res.redirect(`${BASE_PATH}/veiculos/${req.params.id}?msg=${encodeURIComponent("Foto removida.")}`);
-});
-
-// Detalhe só leitura: sem requireAdmin de propósito — quem tem papel `consulta`
-// precisa ver os dados (é o caso de uso da portaria), só não pode alterar.
-router.get("/veiculos/:id/ver", requireAuth, async (req, res) => {
-  const r = await pool.query(`SELECT * FROM veiculo WHERE id = $1`, [req.params.id]);
-  if (!r.rows[0]) return res.status(404).send("Veículo não encontrado.");
-  res.type("html").send(paginaDetalhe({ registro: r.rows[0], sessao: req.sessao }));
-});
-
-router.get("/veiculos/:id", requireAuth, requireAdmin, async (req, res) => {
-  const r = await pool.query(`SELECT * FROM veiculo WHERE id = $1`, [req.params.id]);
-  if (!r.rows[0]) return res.status(404).send("Veículo não encontrado.");
-  res.type("html").send(paginaEdicao({ registro: r.rows[0], sessao: req.sessao, msg: req.query.msg || "" }));
-});
-
-router.post("/veiculos", requireAuth, requireAdmin, async (req, res) => {
-  const c = campos(req.body);
-  await pool.query(
-    `INSERT INTO veiculo (placa, nome, setor, ramal, modelo, cor, criado_por)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [c.placa, c.nome, c.setor, c.ramal, c.modelo, c.cor, req.sessao.id]
-  );
-  const aviso = avisoPlaca(c.placa) || `Veículo ${c.placa} cadastrado.`;
-  res.redirect(`${BASE_PATH}/?msg=${encodeURIComponent(aviso)}`);
-});
-
-router.post("/veiculos/:id", requireAuth, requireAdmin, async (req, res) => {
-  const c = campos(req.body);
-  const r = await pool.query(
-    `UPDATE veiculo
-        SET placa=$1, nome=$2, setor=$3, ramal=$4, modelo=$5, cor=$6,
-            atualizado_em=now(), atualizado_por=$7
-      WHERE id=$8`,
-    [c.placa, c.nome, c.setor, c.ramal, c.modelo, c.cor, req.sessao.id, req.params.id]
-  );
-  if (!r.rowCount) return res.status(404).send("Veículo não encontrado.");
-  const aviso = avisoPlaca(c.placa) || `Veículo ${c.placa} atualizado.`;
-  res.redirect(`${BASE_PATH}/?msg=${encodeURIComponent(aviso)}`);
-});
-
-router.post("/veiculos/:id/excluir", requireAuth, requireAdmin, async (req, res) => {
-  const r = await pool.query(`DELETE FROM veiculo WHERE id=$1 RETURNING placa, foto`, [req.params.id]);
-  if (!r.rowCount) return res.status(404).send("Veículo não encontrado.");
-  // Sem isto a foto de um veículo excluído ficaria em disco para sempre.
-  removerArquivo(r.rows[0].foto);
-  res.redirect(`${BASE_PATH}/?msg=${encodeURIComponent(`Veículo ${r.rows[0].placa || "sem placa"} excluído.`)}`);
 });
 
 // Sonda sem sessão. Precisa existir DENTRO do prefixo também: o nginx do apex
