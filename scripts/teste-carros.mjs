@@ -74,6 +74,11 @@ function navegador(ipReal) {
 }
 
 import sharp from "sharp";
+import { readdirSync, readFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const FILA = process.env.JARVIS_FILA_DIR; // o servidor local precisa ter sido iniciado com o mesmo valor
+const jobs = (id) => (FILA ? readdirSync(FILA).filter((n) => n.startsWith(`carro-${id}-`) && n.endsWith(".json")) : []);
 const jpg = async (cor) =>
   new Blob([await sharp({ create: { width: 800, height: 500, channels: 3, background: cor } }).jpeg().toBuffer()], { type: "image/jpeg" });
 
@@ -156,6 +161,15 @@ try {
   r = await b.get(`/carros/${v.id}`);
   ok(r.status === 200 && r.texto.includes(placa), "página de detalhe abre");
 
+  if (FILA) {
+    await espera(300);
+    const j1 = jobs(v.id);
+    ok(j1.some((n) => n.includes("-cadastro-")) && j1.some((n) => n.includes("-aprovado-")), "avisos: 1 job de cadastro e 1 de aprovação na fila");
+    const dado = JSON.parse(readFileSync(join(FILA, j1.find((n) => n.includes("-cadastro-"))), "utf8"));
+    ok(dado.placa === placa && dado.destino.endsWith("@g.us") && Object.keys(dado.fotos).length === 3 && dado.nome.startsWith("Teste"), "job com nome, placa, destino e 3 fotos");
+    ok(!readdirSync(FILA).some((n) => n.endsWith(".tmp")), "nenhum .tmp sobrando na fila");
+  } else console.log("PULOU avisos (defina JARVIS_FILA_DIR e AVISO_WHATSAPP_JID no servidor e no teste)");
+
   t = await a.token(`/carros/${v.id}/editar`);
   r = await a.post(`/carros/${v.id}`, { placa, modelo: "Onix", cor: "Prata", foto_frente: await jpg("green") }, { csrf: t, multipart: true });
   ok(r.status === 302, "dono troca a foto da frente (" + r.status + ")");
@@ -174,6 +188,16 @@ try {
   r = await a.post(`/carros/${v.id}`, { placa: nova(), modelo: "Onix", cor: "Prata" }, { csrf: t, multipart: true });
   const st2 = (await pool.query("SELECT status FROM veiculo WHERE id=$1", [v.id])).rows[0];
   ok(st2.status === "pendente", "trocar a placa volta a pendente (" + st2.status + ")");
+
+  if (FILA) {
+    // admin cadastrando já entra aprovado: não deve avisar o staff
+    t = await adm.token("/carros/novo");
+    const placaAdm = nova();
+    await adm.post("/carros", { placa: placaAdm, modelo: "Hilux", foto_placa: await jpg("white") }, { csrf: t, multipart: true });
+    const idAdm = (await pool.query("SELECT id FROM veiculo WHERE placa=$1", [placaAdm])).rows[0].id;
+    await espera(300);
+    ok(jobs(idAdm).length === 0, "admin cadastrando não gera aviso");
+  }
 
   const placa3 = nova();
   const antiga = (await pool.query("INSERT INTO veiculo (placa, nome, setor) VALUES ($1,'Fulano antigo','Vendas') RETURNING id", [placa3])).rows[0].id;
