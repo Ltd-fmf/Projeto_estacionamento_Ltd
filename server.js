@@ -24,7 +24,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const express = require("express");
 const multer = require("multer");
-const sharp = require("sharp");
 const { pool } = require("./db/pool");
 const {
   BASE_PATH,
@@ -38,7 +37,10 @@ const {
   registrarFalha,
   limparFalhas,
 } = require("./lib/auth");
-const { paginaLista, paginaEdicao, paginaDetalhe, paginaLogin } = require("./lib/paginas");
+const { upload, comprimir, removerArquivo, DIR_FOTOS } = require("./lib/fotos");
+const { paginaLista, paginaEdicao, paginaDetalhe } = require("./lib/paginas");
+const { paginaLogin } = require("./lib/paginas-social");
+const { router: social } = require("./lib/social");
 
 const app = express();
 // Atrás do nginx: sem isto, req.ip seria sempre 127.0.0.1 e o freio de
@@ -47,42 +49,6 @@ app.set("trust proxy", true);
 app.use(express.urlencoded({ extended: false }));
 
 const PORT = Number(process.env.PORT || 3007);
-
-// As fotos ficam em disco, em `imagens/` — pasta já ignorada pelo .gitignore.
-// Fora do versionamento de propósito: foto de carro de funcionário é dado
-// pessoal, e assim o diretório sobrevive ao `git pull` do deploy.
-const DIR_FOTOS = path.join(__dirname, "imagens");
-fs.mkdirSync(DIR_FOTOS, { recursive: true });
-
-const TIPOS_ACEITOS = new Set(["image/jpeg", "image/png", "image/webp"]);
-
-// Em memória, não em disco: o arquivo passa antes pelo sharp, e o que é gravado
-// é só a versão já reduzida. O limite é de entrada — foto de celular hoje passa
-// fácil de 5 MB, e o que sai daqui fica na casa das centenas de KB.
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
-  fileFilter: (_req, file, cb) => cb(null, TIPOS_ACEITOS.has(file.mimetype)),
-});
-
-// Redução sem perda visível: 1600px no maior lado (mais do que isso não muda
-// nada numa tela de consulta) e WebP em qualidade 82, que é onde o olho ainda
-// não distingue do original. `rotate()` sem argumento aplica a orientação do
-// EXIF — sem ele, foto tirada de pé no celular aparece deitada.
-async function comprimir(buffer, destino) {
-  await sharp(buffer)
-    .rotate()
-    .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
-    .webp({ quality: 82 })
-    .toFile(destino);
-}
-
-// Trocar ou apagar a foto deixa o arquivo anterior órfão em disco.
-function removerArquivo(nome) {
-  if (!nome) return;
-  // basename: impede que um valor estranho no banco vire travessia de diretório.
-  fs.rm(path.join(DIR_FOTOS, path.basename(nome)), { force: true }, () => {});
-}
 
 // Placa dos dois padrões: antigo (AAA0000) e Mercosul (AAA0A00).
 const RE_PLACA = /^[A-Z]{3}[0-9][0-9A-Z][0-9]{2}$/;
@@ -129,6 +95,10 @@ function destinoSeguro(proximo) {
 
 const router = express.Router();
 
+// CSS e fontes (nada pessoal aqui; fotos continuam atrás de login).
+router.use("/publico", express.static(path.join(__dirname, "public"), { maxAge: "7d" }));
+router.use(social);
+
 router.get("/login", async (req, res, next) => {
   try {
     if (await sessaoDe(req)) return res.redirect(`${BASE_PATH}/`);
@@ -159,6 +129,16 @@ router.post("/login", async (req, res, next) => {
       registrarFalha(req, login);
       // Mensagem única: não diz se foi o usuário ou a senha que errou.
       return res.type("html").send(paginaLogin({ erro: "Usuário ou senha inválidos.", proximo, login }));
+    }
+
+    // Senha certa, acesso ainda não liberado: explica em vez de "senha inválida".
+    if (sessao.bloqueio) {
+      limparFalhas(req, login);
+      const info =
+        sessao.bloqueio === "pendente"
+          ? "Seu pedido de acesso ainda está em análise. Você poderá entrar assim que for aprovado."
+          : "Seu pedido de acesso não foi aprovado. Fale com a secretaria.";
+      return res.type("html").send(paginaLogin({ info, proximo, login }));
     }
 
     limparFalhas(req, login);

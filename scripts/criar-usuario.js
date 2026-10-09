@@ -4,7 +4,7 @@
 // cadastrar acesso — não existe tela de autocadastro, de propósito.
 //
 // Uso:
-//   node scripts/criar-usuario.js <login> "<senha>" --nome "Fulano" [--papel admin|consulta]
+//   node scripts/criar-usuario.js <login> "<senha>" --nome "Fulano" [--papel admin|membro|consulta]
 //
 // Sem --senha nova em um usuário existente, a senha é substituída pela que for
 // passada (é o caminho de "esqueci minha senha"), e as sessões abertas dessa
@@ -17,7 +17,7 @@ const { hashSenha } = require("../lib/auth");
 const [, , login, senha, ...rest] = process.argv;
 
 if (!login || !senha) {
-  console.log('Uso: node scripts/criar-usuario.js <login> "<senha>" --nome "Fulano" [--papel admin|consulta]');
+  console.log('Uso: node scripts/criar-usuario.js <login> "<senha>" --nome "Fulano" [--papel admin|membro|consulta]');
   process.exit(1);
 }
 
@@ -35,8 +35,8 @@ for (let i = 0; i < rest.length; i++) {
 }
 
 const papel = flags.papel || "consulta";
-if (!["admin", "consulta"].includes(papel)) {
-  console.error(`Papel inválido: ${papel}. Use admin ou consulta.`);
+if (!["admin", "membro", "consulta"].includes(papel)) {
+  console.error(`Papel inválido: ${papel}. Use admin, membro ou consulta.`);
   process.exit(1);
 }
 if (String(senha).length < 8) {
@@ -52,7 +52,7 @@ async function main() {
   if (existente.rows[0]) {
     await pool.query(
       `UPDATE usuario
-          SET nome = $2, papel = $3, senha_hash = $4, ativo = true,
+          SET nome = $2, papel = $3, senha_hash = $4, ativo = true, status = 'aprovado',
               sessao_versao = sessao_versao + 1
         WHERE id = $1`,
       [existente.rows[0].id, nome, papel, hashSenha(senha)]
@@ -60,7 +60,7 @@ async function main() {
     console.log(`Usuário "${login}" atualizado (papel=${papel}). Sessões antigas derrubadas.`);
   } else {
     await pool.query(
-      `INSERT INTO usuario (login, nome, papel, senha_hash) VALUES ($1, $2, $3, $4)`,
+      `INSERT INTO usuario (login, nome, papel, senha_hash, status) VALUES ($1, $2, $3, $4, 'aprovado')`,
       [String(login).trim(), nome, papel, hashSenha(senha)]
     );
     console.log(`Usuário "${login}" criado (papel=${papel}).`);
