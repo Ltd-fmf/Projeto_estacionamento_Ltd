@@ -145,3 +145,51 @@ main{max-width:1080px;margin:0 auto;padding:28px 16px 64px}
 
 /* Campo-isca anti-robô: fora da tela, não display:none (robôs ignoram esse). */
 .isca{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+
+/* ---- cadastro de carro: 5 blocos de captura ---- */
+.so-leitor{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0)}
+.blocos{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:22px}
+.bloco{position:relative;display:flex;flex-direction:column;background:var(--cartao);border:2px dashed var(--linha);
+  border-radius:var(--raio);overflow:hidden;cursor:pointer;transition:border-color .15s,transform .1s}
+.bloco:hover{border-color:var(--tinta-2)}
+.bloco:active{transform:scale(.98)}
+.bloco:focus-within{outline:3px solid var(--faixa);outline-offset:2px}
+.bloco-obrigatorio{border-color:var(--cone)}
+.bloco.feito{border-style:solid;border-color:var(--ok)}
+.bloco.lendo{opacity:.6}
+.bloco-arte{position:relative;aspect-ratio:16/10;display:grid;place-items:center;background:var(--papel-2)}
+.bloco-arte svg{width:78%;height:auto;fill:none;stroke:var(--tinta-2);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.bloco-arte svg .cheio{fill:var(--tinta-2)}
+.bloco-arte svg .roda{fill:var(--papel-2)}
+.bloco-arte svg text{fill:var(--tinta-2);stroke:none;font-family:ui-monospace,Consolas,monospace}
+.bloco-previa{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.bloco-previa[hidden]{display:none}
+.bloco-texto{display:flex;flex-direction:column;gap:1px;padding:10px 12px 12px}
+.bloco-texto em{font-style:normal;font-size:.72rem;font-weight:700;color:var(--cone)}
+.bloco-texto small{color:var(--suave);font-size:.8rem;line-height:1.3}
+.bloco-ok{position:absolute;top:8px;right:8px;width:26px;height:26px;border-radius:50%;background:var(--ok);color:#fff;
+  display:none;place-items:center;font-weight:700;font-size:.9rem}
+.bloco.feito .bloco-ok{display:grid}
+@media (min-width:720px){.blocos{grid-template-columns:repeat(5,1fr)}}
+
+.leitura{margin-bottom:14px}
+.entrada-placa{font:700 1.5rem ui-monospace,Consolas,monospace!important;letter-spacing:.2em;text-transform:uppercase;max-width:14ch}
+[data-placa-estado]{display:inline}
+[data-placa-estado].achou{color:var(--ok);font-weight:700}
+[data-placa-estado].nao-achou{color:var(--erro);font-weight:700}
+[data-placa-estado].lendo{color:var(--tinta-2);font-weight:700}
+.leitura .btn{margin-left:10px;vertical-align:middle}
+
+/* detalhe do carro e conferência do admin */
+.carro-foto{display:block}
+.galeria{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.galeria-item{margin:0;background:var(--cartao);border:1px solid var(--linha);border-radius:var(--raio);overflow:hidden}
+.galeria-item img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;background:var(--papel-2)}
+.galeria-item figcaption{padding:10px 14px;font-weight:700;font-size:.9rem}
+.conferencia{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.miniatura{width:96px;height:72px;object-fit:cover;border-radius:10px;border:1px solid var(--linha);background:var(--papel-2)}
+.conferencia .miniatura{width:160px;height:96px}
+.mini-fotos{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.mini-fotos .miniatura{width:64px;height:48px}
+.item-carro{align-items:start}
+@media (max-width:640px){.item{grid-template-columns:1fr}.item .acoes{justify-content:flex-start}}

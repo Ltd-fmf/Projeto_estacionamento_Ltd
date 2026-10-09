@@ -1,0 +1,1 @@
+tesseract.js 5.1.1 / core 5.1.1 / eng 4.0.0_best_int — Apache-2.0. Auto-hospedado: sem CDN.
