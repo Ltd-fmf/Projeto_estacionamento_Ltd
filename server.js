@@ -41,6 +41,7 @@ const { upload, comprimir, removerArquivo, DIR_FOTOS } = require("./lib/fotos");
 const { paginaLista, paginaEdicao, paginaDetalhe } = require("./lib/paginas");
 const { paginaLogin } = require("./lib/paginas-social");
 const { router: social } = require("./lib/social");
+const { router: carros } = require("./lib/carros");
 
 const app = express();
 // Atrás do nginx: sem isto, req.ip seria sempre 127.0.0.1 e o freio de
@@ -98,6 +99,7 @@ const router = express.Router();
 // CSS e fontes (nada pessoal aqui; fotos continuam atrás de login).
 router.use("/publico", express.static(path.join(__dirname, "public"), { maxAge: "7d" }));
 router.use(social);
+router.use(carros);
 
 router.get("/login", async (req, res, next) => {
   try {
